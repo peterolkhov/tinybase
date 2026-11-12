@@ -112,6 +112,7 @@ jobs:
           set +e
           npx vitest run --project unit test/unit/core/metric-deletion-before.test.tsx --reporter=json --outputFile=tinybase-before.json
           product_status=$?
+          cat tinybase-before.json
           set -e
           test "$product_status" -eq 1
           python3 - <<'TINYBASE_RESULT'
