@@ -1,0 +1,150 @@
+name: TinyBase metric deletion native validation
+on:
+  push:
+    branches: [codex/validate-metric-deletion-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [after]
+    env:
+      CANDIDATE_SHA: c3014a4a87f436394c821dab0535212556ab740c
+      ORIGINAL_SHA: 393865864c8ad317971cf6d3ebfd65943830a772
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: peterolkhov/tinybase
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Guard exact candidate HEAD, parent, file list and source hashes
+        run: |
+          python3 - <<'PY_GUARD'
+          import base64, hashlib, json, os, pathlib, subprocess
+          manifest=json.loads(base64.b64decode('eyJyZXBvc2l0b3J5IjogInRpbnlwbGV4L3RpbnliYXNlIiwgIm9yaWdpbmFsX2NvbW1pdCI6ICIzOTM4NjU4NjRjOGFkMzE3OTcxY2Y2ZDNlYmZkNjU5NDM4MzBhNzcyIiwgImZpbGVzIjogW3sicGF0aCI6ICJzcmMvbWV0cmljcy9pbmRleC50cyIsICJvcmlnaW5hbF9naXRfYmxvYiI6ICIyMjk1NTAwMDA3ZTlhNWI5N2FlM2I2ODQ2MjljY2IwNzc4NTdjODkzIiwgIm9yaWdpbmFsX3NoYTI1NiI6ICI0YTUxMzZmY2E0MTMxYTNmOTE0YTlkN2Y1YjAyNDU1MDZhMmQzN2QyMDNiNWU1ZTU0Y2M4Yjk0ZmE2NmYyNGE0IiwgImFmdGVyX3NoYTI1NiI6ICJlYzNjMjUxMTVlYmVlMWJiMTFhNWFmOWRmYmQ3MGViZTM4ZjRmOGI4NjA2YjY1NzU2MDM1ZmQ5YjJkNTY2NjZkIiwgIm9yaWdpbmFsX2J5dGVzIjogNDMwMCwgImFmdGVyX2J5dGVzIjogNDQ5Mn0sIHsicGF0aCI6ICJ0ZXN0L3VuaXQvY29yZS9vdGhlci9tZXRyaWNzLnRlc3QudHMiLCAib3JpZ2luYWxfZ2l0X2Jsb2IiOiAiNWMxNjNiMTc3YzUwODM0M2IzMzcyYmFjZmVjODI3ODQ3Mjc3MDFmMSIsICJvcmlnaW5hbF9zaGEyNTYiOiAiNmU3ZGI1YTMwMGE5ODJhNTZjZGYxMTdiYjg1MTA1ZDFiMWRlMDc5OGFiYzU0MzUzMmQ0MWNmOWNhNDE3Mjc0YiIsICJhZnRlcl9zaGEyNTYiOiAiOTUyZGEzY2YxMTM0ZGZjYzEyMzRlNjVlYWU3NWE0ZjAzMjc0NTgzOTY1OWJjY2YwYjY3ZWJkMzM0ODQzNmNhZSIsICJvcmlnaW5hbF9ieXRlcyI6IDE5MTQ0LCAiYWZ0ZXJfYnl0ZXMiOiAyNDA0M30sIHsicGF0aCI6ICJ0ZXN0L3VuaXQvY29yZS91aS1yZWFjdC9jb21wb25lbnRzLnRlc3QudHN4IiwgIm9yaWdpbmFsX2dpdF9ibG9iIjogIjkzNWFmMzJjNjIxMDdhODA0YWE4OWI4NDg5MTkzZTBlNDA0Y2M1NDUiLCAib3JpZ2luYWxfc2hhMjU2IjogIjdhMTJiYWJiMGVmZDFkYzVkNzRiMTI4Yjg4MjViN2UyZjM1MjE3ZjA4ZjcyNGYwNjU4ZTBjMzJkMzg1MjAyOTEiLCAiYWZ0ZXJfc2hhMjU2IjogIjQxMjAyMzU5NWVkOTBiNmQyNzBiOGViNTcxZWEwODQ2NzYxNzM1ZjljZjZmMjEwMWNjODkwOWMzOGQwMDE3ZWIiLCAib3JpZ2luYWxfYnl0ZXMiOiAyMzQ2NiwgImFmdGVyX2J5dGVzIjogMjQ3Nzd9XX0='))
+          git=lambda *args: subprocess.check_output(['git',*args],text=True).strip()
+          assert git('rev-parse','HEAD')==os.environ['CANDIDATE_SHA']
+          assert git('rev-parse','HEAD^')==os.environ['ORIGINAL_SHA']
+          assert git('status','--porcelain')==''
+          assert sorted(git('diff','--name-only',os.environ['ORIGINAL_SHA'],'HEAD').splitlines())==sorted(f['path'] for f in manifest['files'])
+          for f in manifest['files']:
+              assert hashlib.sha256(pathlib.Path(f['path']).read_bytes()).hexdigest()==f['after_sha256'],f
+              old=subprocess.check_output(['git','show',os.environ['ORIGINAL_SHA']+':'+f['path']])
+              assert hashlib.sha256(old).hexdigest()==f['original_sha256'],f
+              assert git('rev-parse',os.environ['ORIGINAL_SHA']+':'+f['path'])==f['original_git_blob'],f
+          print('TINYBASE_CANDIDATE_GUARDS_PASS')
+          PY_GUARD
+      - name: Restore exact original production owner for negative control
+        if: matrix.version == 'before'
+        run: |
+          git show "$ORIGINAL_SHA:src/metrics/index.ts" > src/metrics/index.ts
+          test "$(git hash-object src/metrics/index.ts)" = 2295500007e9a5b97ae3b684629ccb077857c893
+          test "$(git diff --name-only)" = src/metrics/index.ts
+      - run: npm ci --legacy-peer-deps
+      - run: npm run compileForTest
+      - name: Native affected tests are RED on the original owner
+        if: matrix.version == 'before'
+        run: |
+          set +e
+          npx vitest run --project unit test/unit/core/other/metrics.test.ts test/unit/core/ui-react/components.test.tsx --reporter=json --outputFile=native-before.json
+          product_status=$?
+          set -e
+          cat native-before.json
+          test "$product_status" -eq 1
+          python3 - <<'PY_RED'
+          import json, pathlib
+          d=json.loads(pathlib.Path('native-before.json').read_text())
+          results=[a for r in d['testResults'] for a in r['assertionResults']]
+          failed=[a for a in results if a['status']=='failed']
+          assert len(failed)==6,[(a['fullName'],a['status']) for a in results]
+          assert all('AssertionError' in '\n'.join(a['failureMessages']) for a in failed),failed
+          assert len([a for a in failed if 'notifies with old value' in a['fullName']])==2
+          assert any('MetricView follows metric deletion and recreation' in a['fullName'] for a in failed)
+          assert all(a['status']=='passed' for a in results if 'does not report stale removal' in a['fullName'] or 'respects listener removal' in a['fullName'])
+          print('TINYBASE_NATIVE_RED_CONFIRMED',len(failed))
+          PY_RED
+      - name: Native affected tests are GREEN with the candidate
+        if: matrix.version == 'after'
+        run: npx vitest run --project unit test/unit/core/other/metrics.test.ts test/unit/core/ui-react/components.test.tsx
+      - name: Unchanged independently reproduced public fixture
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          python3 - <<'PY_FIXTURE'
+          import base64, hashlib, pathlib
+          p=pathlib.Path('test/unit/core/metric-deletion-before.test.tsx')
+          assert not p.exists()
+          fixture=base64.b64decode('aW1wb3J0IHtjbGVhbnVwLCByZW5kZXJ9IGZyb20gJ0B0ZXN0aW5nLWxpYnJhcnkvcmVhY3QnOwppbXBvcnQge2FjdCwgY3JlYXRlRWxlbWVudH0gZnJvbSAncmVhY3QnOwppbXBvcnQge2NyZWF0ZU1ldHJpY3MsIGNyZWF0ZVN0b3JlfSBmcm9tICd0aW55YmFzZSc7CmltcG9ydCB7TWV0cmljVmlld30gZnJvbSAndGlueWJhc2UvdWktcmVhY3QnOwppbXBvcnQge2FmdGVyRWFjaCwgZXhwZWN0LCB0ZXN0fSBmcm9tICd2aXRlc3QnOwoKYWZ0ZXJFYWNoKGNsZWFudXApOwoKY29uc3QgcHJlcGFyZSA9ICgpID0+IHsKICBjb25zdCBzdG9yZSA9IGNyZWF0ZVN0b3JlKCkuc2V0VGFibGUoJ3BldHMnLCB7Zmlkbzoge3ByaWNlOiA1fX0pOwogIGNvbnN0IG1ldHJpY3MgPSBjcmVhdGVNZXRyaWNzKHN0b3JlKQogICAgLnNldE1ldHJpY0RlZmluaXRpb24oJ2hpZ2hlc3RQcmljZScsICdwZXRzJywgJ21heCcsICdwcmljZScpOwogIHJldHVybiB7c3RvcmUsIG1ldHJpY3N9Owp9OwoKdGVzdCgncHVibGljIGRlbGV0aW9uIG5vdGlmaWVzIHNwZWNpZmljIGFuZCB3aWxkY2FyZCB2YWx1ZSBzdWJzY3JpYmVycycsICgpID0+IHsKICBjb25zdCB7bWV0cmljc30gPSBwcmVwYXJlKCk7CiAgY29uc3Qgc3BlY2lmaWM6IHVua25vd25bXSA9IFtdOwogIGNvbnN0IHdpbGRjYXJkOiB1bmtub3duW10gPSBbXTsKICBtZXRyaWNzLmFkZE1ldHJpY0xpc3RlbmVyKCdoaWdoZXN0UHJpY2UnLCAoX20sIGlkLCB2YWx1ZSwgb2xkKSA9PiB7CiAgICBzcGVjaWZpYy5wdXNoKFtpZCwgdmFsdWUsIG9sZF0pOwogIH0pOwogIG1ldHJpY3MuYWRkTWV0cmljTGlzdGVuZXIobnVsbCwgKF9tLCBpZCwgdmFsdWUsIG9sZCkgPT4gewogICAgd2lsZGNhcmQucHVzaChbaWQsIHZhbHVlLCBvbGRdKTsKICB9KTsKICBtZXRyaWNzLmRlbE1ldHJpY0RlZmluaXRpb24oJ2hpZ2hlc3RQcmljZScpOwogIGV4cGVjdChtZXRyaWNzLmdldE1ldHJpYygnaGlnaGVzdFByaWNlJykpLnRvQmVVbmRlZmluZWQoKTsKICBjb25zb2xlLmxvZygnVElOWUJBU0VfUFVCTElDX0RFTEVUSU9OJywgSlNPTi5zdHJpbmdpZnkoewogICAgZ2V0dGVyVW5kZWZpbmVkOiBtZXRyaWNzLmdldE1ldHJpYygnaGlnaGVzdFByaWNlJykgPT09IHVuZGVmaW5lZCwKICAgIHNwZWNpZmljQ2FsbHM6IHNwZWNpZmljLmxlbmd0aCwgd2lsZGNhcmRDYWxsczogd2lsZGNhcmQubGVuZ3RoLAogIH0pKTsKICBleHBlY3Qoc3BlY2lmaWMpLnRvRXF1YWwoW1snaGlnaGVzdFByaWNlJywgdW5kZWZpbmVkLCA1XV0pOwogIGV4cGVjdCh3aWxkY2FyZCkudG9FcXVhbChbWydoaWdoZXN0UHJpY2UnLCB1bmRlZmluZWQsIDVdXSk7Cn0pOwoKdGVzdCgnbmF0aXZlIE1ldHJpY1ZpZXcgY2xlYXJzIHRoZSByZW1vdmVkIG1ldHJpYycsICgpID0+IHsKICBjb25zdCB7bWV0cmljc30gPSBwcmVwYXJlKCk7CiAgY29uc3Qge2NvbnRhaW5lcn0gPSByZW5kZXIoY3JlYXRlRWxlbWVudChNZXRyaWNWaWV3LCB7CiAgICBtZXRyaWNJZDogJ2hpZ2hlc3RQcmljZScsIG1ldHJpY3MsCiAgfSkpOwogIGV4cGVjdChjb250YWluZXIudGV4dENvbnRlbnQpLnRvQmUoJzUnKTsKICBhY3QoKCkgPT4geyBtZXRyaWNzLmRlbE1ldHJpY0RlZmluaXRpb24oJ2hpZ2hlc3RQcmljZScpOyB9KTsKICBleHBlY3QobWV0cmljcy5nZXRNZXRyaWMoJ2hpZ2hlc3RQcmljZScpKS50b0JlVW5kZWZpbmVkKCk7CiAgY29uc29sZS5sb2coJ1RJTllCQVNFX1JFTkRFUkVEX0RFTEVUSU9OJywgSlNPTi5zdHJpbmdpZnkoewogICAgZ2V0dGVyVW5kZWZpbmVkOiBtZXRyaWNzLmdldE1ldHJpYygnaGlnaGVzdFByaWNlJykgPT09IHVuZGVmaW5lZCwKICAgIHJlbmRlcmVkOiBjb250YWluZXIudGV4dENvbnRlbnQsCiAgfSkpOwogIGV4cGVjdChjb250YWluZXIudGV4dENvbnRlbnQpLnRvQmUoJycpOwp9KTsKCnRlc3QoJ2NvbnRyb2wgb3JkaW5hcnkgdGFibGUgdXBkYXRlcyBhbmQgZW1wdHkgdGFibGUgdXBkYXRlIG5hdGl2ZSB2aWV3JywgKCkgPT4gewogIGNvbnN0IHtzdG9yZSwgbWV0cmljc30gPSBwcmVwYXJlKCk7CiAgY29uc3Qge2NvbnRhaW5lcn0gPSByZW5kZXIoY3JlYXRlRWxlbWVudChNZXRyaWNWaWV3LCB7CiAgICBtZXRyaWNJZDogJ2hpZ2hlc3RQcmljZScsIG1ldHJpY3MsCiAgfSkpOwogIGV4cGVjdChjb250YWluZXIudGV4dENvbnRlbnQpLnRvQmUoJzUnKTsKICBhY3QoKCkgPT4geyBzdG9yZS5zZXRDZWxsKCdwZXRzJywgJ2ZpZG8nLCAncHJpY2UnLCA3KTsgfSk7CiAgZXhwZWN0KGNvbnRhaW5lci50ZXh0Q29udGVudCkudG9CZSgnNycpOwogIGFjdCgoKSA9PiB7IHN0b3JlLmRlbFJvdygncGV0cycsICdmaWRvJyk7IH0pOwogIGV4cGVjdChjb250YWluZXIudGV4dENvbnRlbnQpLnRvQmUoJycpOwogIGFjdCgoKSA9PiB7IHN0b3JlLnNldENlbGwoJ3BldHMnLCAnZmlkbycsICdwcmljZScsIDkpOyB9KTsKICBleHBlY3QoY29udGFpbmVyLnRleHRDb250ZW50KS50b0JlKCc5Jyk7CiAgYWN0KCgpID0+IHsgbWV0cmljcy5kZWxNZXRyaWNEZWZpbml0aW9uKCdvdGhlck1ldHJpYycpOyB9KTsKICBleHBlY3QoY29udGFpbmVyLnRleHRDb250ZW50KS50b0JlKCc5Jyk7Cn0pOwoKdGVzdCgnY29udHJvbCBhYnNlbnQgZGVsZXRpb24gY3JlYXRlcyBubyBmYWtlIHZhbHVlIG5vdGlmaWNhdGlvbicsICgpID0+IHsKICBjb25zdCB7bWV0cmljc30gPSBwcmVwYXJlKCk7CiAgY29uc3QgY2hhbmdlczogdW5rbm93bltdID0gW107CiAgbWV0cmljcy5hZGRNZXRyaWNMaXN0ZW5lcignYWJzZW50JywgKF9tLCBpZCwgdmFsdWUsIG9sZCkgPT4gewogICAgY2hhbmdlcy5wdXNoKFtpZCwgdmFsdWUsIG9sZF0pOwogIH0pOwogIG1ldHJpY3MuZGVsTWV0cmljRGVmaW5pdGlvbignYWJzZW50Jyk7CiAgZXhwZWN0KG1ldHJpY3MuZ2V0TWV0cmljKCdhYnNlbnQnKSkudG9CZVVuZGVmaW5lZCgpOwogIGV4cGVjdChjaGFuZ2VzKS50b0VxdWFsKFtdKTsKfSk7Cg==')
+          assert hashlib.sha256(fixture).hexdigest()=='bd7299a7d6b9f9895ccb3122affdf022940d84da57c012ab60ba5326d89c8edd'
+          p.write_bytes(fixture)
+          PY_FIXTURE
+          set +e
+          npx vitest run --project unit test/unit/core/metric-deletion-before.test.tsx --reporter=json --outputFile=public-fixture.json
+          product_status=$?
+          set -e
+          cat public-fixture.json
+          PRODUCT_STATUS="$product_status" python3 - <<'PY_PUBLIC'
+          import json, os, pathlib
+          d=json.loads(pathlib.Path('public-fixture.json').read_text())
+          before=os.environ['VERSION']=='before'
+          assert int(os.environ['PRODUCT_STATUS'])==(1 if before else 0)
+          assert d['numTotalTests']==4
+          assert d['numFailedTests']==(2 if before else 0)
+          assert d['numPassedTests']==(2 if before else 4)
+          failed={a['title'] for r in d['testResults'] for a in r['assertionResults'] if a['status']=='failed'}
+          assert failed==({'public deletion notifies specific and wildcard value subscribers','native MetricView clears the removed metric'} if before else set()),failed
+          print('TINYBASE_PUBLIC_FIXTURE',os.environ['VERSION'],d['numPassedTests'],d['numFailedTests'])
+          PY_PUBLIC
+          rm test/unit/core/metric-deletion-before.test.tsx
+      - name: Official CI lint
+        if: matrix.version == 'after'
+        run: npm run lint
+      - name: Official CI spell
+        if: matrix.version == 'after'
+        run: npm run spell
+      - name: Official CI TypeScript
+        if: matrix.version == 'after'
+        run: npm run ts
+      - name: Official CI whole-core tests with native coverage
+        if: matrix.version == 'after'
+        run: npm run testUnitFast
+      - name: Assert configured four-bundle coverage is 100 percent
+        if: matrix.version == 'after'
+        run: |
+          python3 - <<'PY_COVERAGE'
+          import json,pathlib
+          d=json.loads(pathlib.Path('tmp/coverage/coverage-summary.json').read_text())
+          bundles={'dist/index.js','dist/ui-react/index.js','dist/ui-solid/index.js','dist/ui-svelte/index.js'}
+          found={name: next((v for k,v in d.items() if k.endswith('/'+name)),None) for name in bundles}
+          assert all(found.values()),list(d)
+          for name,report in {'total':d['total'],**found}.items():
+              for kind in ['lines','statements','functions','branches']:
+                  assert report[kind]['pct']==100,(name,kind,report[kind])
+          print('TINYBASE_FOUR_BUNDLE_COVERAGE_100',json.dumps(found))
+          PY_COVERAGE
+      - name: Final source hashes and diff whitespace
+        if: matrix.version == 'after'
+        run: |
+          git diff --check "$ORIGINAL_SHA" HEAD
+          git status --short
+          git diff --stat
+          git diff -- src/metrics/index.ts test/unit/core/other/metrics.test.ts test/unit/core/ui-react/components.test.tsx
+          python3 - <<'PY_FINAL'
+          import base64,hashlib,json,pathlib,subprocess
+          for f in json.loads(base64.b64decode('eyJyZXBvc2l0b3J5IjogInRpbnlwbGV4L3RpbnliYXNlIiwgIm9yaWdpbmFsX2NvbW1pdCI6ICIzOTM4NjU4NjRjOGFkMzE3OTcxY2Y2ZDNlYmZkNjU5NDM4MzBhNzcyIiwgImZpbGVzIjogW3sicGF0aCI6ICJzcmMvbWV0cmljcy9pbmRleC50cyIsICJvcmlnaW5hbF9naXRfYmxvYiI6ICIyMjk1NTAwMDA3ZTlhNWI5N2FlM2I2ODQ2MjljY2IwNzc4NTdjODkzIiwgIm9yaWdpbmFsX3NoYTI1NiI6ICI0YTUxMzZmY2E0MTMxYTNmOTE0YTlkN2Y1YjAyNDU1MDZhMmQzN2QyMDNiNWU1ZTU0Y2M4Yjk0ZmE2NmYyNGE0IiwgImFmdGVyX3NoYTI1NiI6ICJlYzNjMjUxMTVlYmVlMWJiMTFhNWFmOWRmYmQ3MGViZTM4ZjRmOGI4NjA2YjY1NzU2MDM1ZmQ5YjJkNTY2NjZkIiwgIm9yaWdpbmFsX2J5dGVzIjogNDMwMCwgImFmdGVyX2J5dGVzIjogNDQ5Mn0sIHsicGF0aCI6ICJ0ZXN0L3VuaXQvY29yZS9vdGhlci9tZXRyaWNzLnRlc3QudHMiLCAib3JpZ2luYWxfZ2l0X2Jsb2IiOiAiNWMxNjNiMTc3YzUwODM0M2IzMzcyYmFjZmVjODI3ODQ3Mjc3MDFmMSIsICJvcmlnaW5hbF9zaGEyNTYiOiAiNmU3ZGI1YTMwMGE5ODJhNTZjZGYxMTdiYjg1MTA1ZDFiMWRlMDc5OGFiYzU0MzUzMmQ0MWNmOWNhNDE3Mjc0YiIsICJhZnRlcl9zaGEyNTYiOiAiOTUyZGEzY2YxMTM0ZGZjYzEyMzRlNjVlYWU3NWE0ZjAzMjc0NTgzOTY1OWJjY2YwYjY3ZWJkMzM0ODQzNmNhZSIsICJvcmlnaW5hbF9ieXRlcyI6IDE5MTQ0LCAiYWZ0ZXJfYnl0ZXMiOiAyNDA0M30sIHsicGF0aCI6ICJ0ZXN0L3VuaXQvY29yZS91aS1yZWFjdC9jb21wb25lbnRzLnRlc3QudHN4IiwgIm9yaWdpbmFsX2dpdF9ibG9iIjogIjkzNWFmMzJjNjIxMDdhODA0YWE4OWI4NDg5MTkzZTBlNDA0Y2M1NDUiLCAib3JpZ2luYWxfc2hhMjU2IjogIjdhMTJiYWJiMGVmZDFkYzVkNzRiMTI4Yjg4MjViN2UyZjM1MjE3ZjA4ZjcyNGYwNjU4ZTBjMzJkMzg1MjAyOTEiLCAiYWZ0ZXJfc2hhMjU2IjogIjQxMjAyMzU5NWVkOTBiNmQyNzBiOGViNTcxZWEwODQ2NzYxNzM1ZjljZjZmMjEwMWNjODkwOWMzOGQwMDE3ZWIiLCAib3JpZ2luYWxfYnl0ZXMiOiAyMzQ2NiwgImFmdGVyX2J5dGVzIjogMjQ3Nzd9XX0='))['files']:
+              assert hashlib.sha256(pathlib.Path(f['path']).read_bytes()).hexdigest()==f['after_sha256'],f
+          changed=subprocess.check_output(['git','diff','--name-only'],text=True).splitlines()
+          assert set(changed)<= {'coverage.json'},changed
+          print('TINYBASE_FINAL_SOURCE_HASHES_PASS',json.dumps({'generated_changes':changed}))
+          PY_FINAL
+          git diff -- coverage.json
