@@ -1,0 +1,125 @@
+name: TinyBase native metric deletion proof
+on:
+  push:
+    branches: [codex/diagnose-metric-deletion]
+permissions:
+  contents: read
+jobs:
+  before:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyplex/tinybase
+          ref: 393865864c8ad317971cf6d3ebfd65943830a772
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Assert exact whole unchanged upstream checkout
+        run: |
+          test "$(git rev-parse HEAD)" = 393865864c8ad317971cf6d3ebfd65943830a772
+          test -z "$(git status --porcelain)"
+          node --version
+      - run: npm ci --legacy-peer-deps
+      - run: npm run compileForTest
+      - name: Existing native metrics and React component tests
+        run: npx vitest run --project unit test/unit/core/other/metrics.test.ts test/unit/core/ui-react/components.test.tsx
+      - name: Ordinary public getter, notification and rendered consequence
+        run: |
+          test ! -e test/unit/core/metric-deletion-before.test.tsx
+          cat > test/unit/core/metric-deletion-before.test.tsx <<'TINYBASE_FIXTURE'
+          import {cleanup, render} from '@testing-library/react';
+          import {act, createElement} from 'react';
+          import {createMetrics, createStore} from 'tinybase';
+          import {MetricView} from 'tinybase/ui-react';
+          import {afterEach, expect, test} from 'vitest';
+
+          afterEach(cleanup);
+
+          const prepare = () => {
+            const store = createStore().setTable('pets', {fido: {price: 5}});
+            const metrics = createMetrics(store)
+              .setMetricDefinition('highestPrice', 'pets', 'max', 'price');
+            return {store, metrics};
+          };
+
+          test('public deletion notifies specific and wildcard value subscribers', () => {
+            const {metrics} = prepare();
+            const specific: unknown[] = [];
+            const wildcard: unknown[] = [];
+            metrics.addMetricListener('highestPrice', (_m, id, value, old) => {
+              specific.push([id, value, old]);
+            });
+            metrics.addMetricListener(null, (_m, id, value, old) => {
+              wildcard.push([id, value, old]);
+            });
+            metrics.delMetricDefinition('highestPrice');
+            expect(metrics.getMetric('highestPrice')).toBeUndefined();
+            console.log('TINYBASE_PUBLIC_DELETION', JSON.stringify({
+              getterUndefined: metrics.getMetric('highestPrice') === undefined,
+              specificCalls: specific.length, wildcardCalls: wildcard.length,
+            }));
+            expect(specific).toEqual([['highestPrice', undefined, 5]]);
+            expect(wildcard).toEqual([['highestPrice', undefined, 5]]);
+          });
+
+          test('native MetricView clears the removed metric', () => {
+            const {metrics} = prepare();
+            const {container} = render(createElement(MetricView, {
+              metricId: 'highestPrice', metrics,
+            }));
+            expect(container.textContent).toBe('5');
+            act(() => { metrics.delMetricDefinition('highestPrice'); });
+            expect(metrics.getMetric('highestPrice')).toBeUndefined();
+            console.log('TINYBASE_RENDERED_DELETION', JSON.stringify({
+              getterUndefined: metrics.getMetric('highestPrice') === undefined,
+              rendered: container.textContent,
+            }));
+            expect(container.textContent).toBe('');
+          });
+
+          test('control ordinary table updates and empty table update native view', () => {
+            const {store, metrics} = prepare();
+            const {container} = render(createElement(MetricView, {
+              metricId: 'highestPrice', metrics,
+            }));
+            expect(container.textContent).toBe('5');
+            act(() => { store.setCell('pets', 'fido', 'price', 7); });
+            expect(container.textContent).toBe('7');
+            act(() => { store.delRow('pets', 'fido'); });
+            expect(container.textContent).toBe('');
+            act(() => { store.setCell('pets', 'fido', 'price', 9); });
+            expect(container.textContent).toBe('9');
+            act(() => { metrics.delMetricDefinition('otherMetric'); });
+            expect(container.textContent).toBe('9');
+          });
+
+          test('control absent deletion creates no fake value notification', () => {
+            const {metrics} = prepare();
+            const changes: unknown[] = [];
+            metrics.addMetricListener('absent', (_m, id, value, old) => {
+              changes.push([id, value, old]);
+            });
+            metrics.delMetricDefinition('absent');
+            expect(metrics.getMetric('absent')).toBeUndefined();
+            expect(changes).toEqual([]);
+          });
+          TINYBASE_FIXTURE
+          set +e
+          npx vitest run --project unit test/unit/core/metric-deletion-before.test.tsx --reporter=json --outputFile=tinybase-before.json
+          product_status=$?
+          set -e
+          test "$product_status" -eq 1
+          python3 - <<'TINYBASE_RESULT'
+          import json,pathlib,subprocess
+          d=json.loads(pathlib.Path('tinybase-before.json').read_text())
+          assert d['numTotalTests']==4 and d['numPassedTests']==2 and d['numFailedTests']==2,d
+          failed={a['title']for r in d['testResults']for a in r['assertionResults']if a['status']=='failed'}
+          assert failed=={'public deletion notifies specific and wildcard value subscribers','native MetricView clears the removed metric'},failed
+          assert subprocess.check_output(['git','diff','--name-only'],text=True)==''
+          print('TINYBASE_PUBLIC_BEFORE='+json.dumps({'source':'393865864c8ad317971cf6d3ebfd65943830a772','native_failures':sorted(failed),'ordinary_controls_passed':2,'tracked_source_unchanged':True}))
+          TINYBASE_RESULT
